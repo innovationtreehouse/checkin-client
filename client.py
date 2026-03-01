@@ -181,9 +181,32 @@ def render_html(state, backend_url):
   }}
 </style>
 <script>
-  // Auto-refresh the page periodically (to pull new scan flashes)
-  // Also refreshes the iframe underneath
-  setTimeout(() => location.reload(), 3000); // Check for flashes every 3s
+  let lastFlash = "";
+  async function pollFlashes() {{
+    try {{
+      const res = await fetch("/poll");
+      if (res.ok) {{
+        const text = await res.text();
+        if (text && text !== lastFlash) {{
+          const container = document.getElementById("flash-container");
+          container.innerHTML = text;
+          // Trigger reflow to restart animation
+          const banner = container.querySelector(".banner");
+          if (banner) {{
+            banner.style.animation = 'none';
+            banner.offsetHeight; // trigger reflow
+            banner.style.animation = null; 
+          }}
+          lastFlash = text;
+          
+          // Set a timeout to clear the HTML so old flashes don't block new identical ones
+          setTimeout(() => {{ if (lastFlash === text) container.innerHTML = ''; }}, 6000);
+        }}
+      }}
+    }} catch (e) {{}}
+    setTimeout(pollFlashes, 1000);
+  }}
+  setTimeout(pollFlashes, 1000);
 </script>
 </head>
 <body>
@@ -202,6 +225,30 @@ class KioskHandler(BaseHTTPRequestHandler):
     backend_url = None  # set from main
 
     def do_GET(self):
+        if self.path == "/poll":
+            # Return flash message HTML if any
+            scan_result = self.state.pop_scan_result()
+            html = ""
+            if scan_result:
+                sr = scan_result
+                if sr.get("status", 0) >= 400 or "error" in sr.get("body", {}):
+                    err = sr.get("body", {}).get("error", "Unknown error")
+                    html = f'<div class="banner banner-error">✗ Scan failed: {err}</div>'
+                else:
+                    body = sr.get("body", {})
+                    stype = body.get("type", "")
+                    email = body.get("participant", {}).get("email", "?")
+                    label = "CHECKED IN" if stype == "checkin" else "CHECKED OUT"
+                    html = f'<div class="banner banner-ok">✓ {email} — {label}</div>'
+            
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            self.wfile.write(html.encode())
+            return
+
+        # Main page view
         html = render_html(self.state, self.backend_url)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
