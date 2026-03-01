@@ -184,7 +184,7 @@ class KioskHandler(BaseHTTPRequestHandler):
           }}
           lastFlash = text;
           setTimeout(() => {{ if (lastFlash === text) container.innerHTML = ''; }}, 6000);
-        }
+        }}
       }}
     }} catch (e) {{}}
     setTimeout(pollFlashes, 1000);
