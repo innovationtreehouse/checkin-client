@@ -3,9 +3,10 @@
 CheckMeIn Kiosk Client
 
 A thin client for Raspberry Pi that:
-  1. Serves a local attendance page on localhost (auto-refreshes every 60s)
-  2. Listens for USB barcode/QR scanner input
-  3. Signs all requests to the backend with Ed25519
+  1. Serves a transparent reverse proxy on localhost:8083
+  2. Wraps the Next.js frontend in an iframe at GET / pointing to /kioskdisplay
+  3. Injects Ed25519 signature headers automatically into proxied API requests
+  4. Listens for USB barcode/QR scanner input
 """
 
 import json
@@ -14,10 +15,9 @@ import sys
 import time
 import threading
 import logging
-from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from nacl.signing import SigningKey
-from nacl.encoding import HexEncoder
 import requests
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,6 @@ log = logging.getLogger("kiosk")
 def load_config(path="config.json"):
     if not os.path.exists(path):
         log.error(f"Config file not found: {path}")
-        log.error("Copy config.example.json → config.json and edit it.")
         sys.exit(1)
     with open(path) as f:
         return json.load(f)
@@ -49,11 +48,6 @@ def load_signing_key(path):
     return SigningKey(seed)
 
 def sign_request(signing_key, method, path, body=""):
-    """Create signature headers for a request.
-
-    Signs: timestamp + method + path + body
-    Returns dict of headers to merge into the request.
-    """
     timestamp = str(int(time.time()))
     message = f"{timestamp}:{method}:{path}:{body}".encode()
     signature = signing_key.sign(message).signature.hex()
@@ -63,7 +57,7 @@ def sign_request(signing_key, method, path, body=""):
     }
 
 # ---------------------------------------------------------------------------
-# Backend communication
+# Backend communication & State
 # ---------------------------------------------------------------------------
 class BackendClient:
     def __init__(self, base_url, signing_key):
@@ -89,13 +83,10 @@ class BackendClient:
             log.error(f"Failed to post scan: {e}")
             return {"error": str(e)}, 0
 
-# ---------------------------------------------------------------------------
-# Attendance state (for flash messages)
-# ---------------------------------------------------------------------------
 class AttendanceState:
     def __init__(self):
         self.lock = threading.Lock()
-        self.last_scan = None     # dict with scan result for flash message
+        self.last_scan = None
 
     def set_scan_result(self, result):
         with self.lock:
@@ -108,37 +99,32 @@ class AttendanceState:
             return r
 
 # ---------------------------------------------------------------------------
-# HTML rendering
+# Transparent Signing Proxy & Kiosk Handler
 # ---------------------------------------------------------------------------
-def render_html(state, backend_url):
-    scan_result = state.pop_scan_result()
+class KioskHandler(BaseHTTPRequestHandler):
+    state = None
+    backend = None
 
-    # Build scan flash banner
-    scan_banner = ""
-    if scan_result:
-        sr = scan_result
-        if sr.get("status", 0) >= 400 or "error" in sr.get("body", {}):
-            err = sr.get("body", {}).get("error", "Unknown error")
-            scan_banner = f"""
-            <div class="banner banner-error">
-                ✗ Scan failed: {err}
-            </div>"""
+    def do_GET(self):
+        if self.path == "/":
+            self._serve_wrapper()
+        elif self.path == "/poll":
+            self._serve_poll()
         else:
-            body = sr.get("body", {})
-            stype = body.get("type", "")
-            email = body.get("participant", {}).get("email", "?")
-            label = "CHECKED IN" if stype == "checkin" else "CHECKED OUT"
-            scan_banner = f"""
-            <div class="banner banner-ok">
-                ✓ {email} — {label}
-            </div>"""
+            self._proxy_request("GET")
 
-    return f"""<!DOCTYPE html>
+    def do_POST(self): self._proxy_request("POST")
+    def do_PUT(self): self._proxy_request("PUT")
+    def do_DELETE(self): self._proxy_request("DELETE")
+    def do_PATCH(self): self._proxy_request("PATCH")
+
+    def _serve_wrapper(self):
+        html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CheckMeIn — Attendance</title>
+<title>CheckMeIn — Kiosk</title>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   body, html {{ width: 100%; height: 100%; overflow: hidden; background: #0f172a; font-family: sans-serif; }}
@@ -190,18 +176,15 @@ def render_html(state, backend_url):
         if (text && text !== lastFlash) {{
           const container = document.getElementById("flash-container");
           container.innerHTML = text;
-          // Trigger reflow to restart animation
           const banner = container.querySelector(".banner");
           if (banner) {{
             banner.style.animation = 'none';
-            banner.offsetHeight; // trigger reflow
+            banner.offsetHeight;
             banner.style.animation = null; 
           }}
           lastFlash = text;
-          
-          // Set a timeout to clear the HTML so old flashes don't block new identical ones
           setTimeout(() => {{ if (lastFlash === text) container.innerHTML = ''; }}, 6000);
-        }}
+        }
       }}
     }} catch (e) {{}}
     setTimeout(pollFlashes, 1000);
@@ -210,68 +193,113 @@ def render_html(state, backend_url):
 </script>
 </head>
 <body>
-  <div id="flash-container">
-    {scan_banner}
-  </div>
-  <iframe src="{backend_url}/attendance"></iframe>
+  <div id="flash-container"></div>
+  <iframe src="/kioskdisplay"></iframe>
 </body>
 </html>"""
-
-# ---------------------------------------------------------------------------
-# Local HTTP server
-# ---------------------------------------------------------------------------
-class KioskHandler(BaseHTTPRequestHandler):
-    state = None        # set from main
-    backend_url = None  # set from main
-
-    def do_GET(self):
-        if self.path == "/poll":
-            # Return flash message HTML if any
-            scan_result = self.state.pop_scan_result()
-            html = ""
-            if scan_result:
-                sr = scan_result
-                if sr.get("status", 0) >= 400 or "error" in sr.get("body", {}):
-                    err = sr.get("body", {}).get("error", "Unknown error")
-                    html = f'<div class="banner banner-error">✗ Scan failed: {err}</div>'
-                else:
-                    body = sr.get("body", {})
-                    stype = body.get("type", "")
-                    email = body.get("participant", {}).get("email", "?")
-                    label = "CHECKED IN" if stype == "checkin" else "CHECKED OUT"
-                    html = f'<div class="banner banner-ok">✓ {email} — {label}</div>'
-            
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-            self.wfile.write(html.encode())
-            return
-
-        # Main page view
-        html = render_html(self.state, self.backend_url)
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        self.wfile.write(html.encode())
+        self.wfile.write(html.encode("utf-8"))
+
+    def _serve_poll(self):
+        scan_result = self.state.pop_scan_result()
+        html = ""
+        if scan_result:
+            sr = scan_result
+            if sr.get("status", 0) >= 400 or "error" in sr.get("body", {}):
+                err = sr.get("body", {}).get("error", "Unknown error")
+                html = f'<div class="banner banner-error">✗ Scan failed: {err}</div>'
+            else:
+                body = sr.get("body", {})
+                stype = body.get("type", "")
+                email = body.get("participant", {}).get("email", "?")
+                label = "CHECKED IN" if stype == "checkin" else "CHECKED OUT"
+                html = f'<div class="banner banner-ok">✓ {email} — {label}</div>'
+        
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(html.encode("utf-8"))
+
+    def _proxy_request(self, method):
+        url = self.backend.base_url + self.path
+        
+        body_bytes = b""
+        length = int(self.headers.get("Content-Length", 0))
+        if length > 0:
+            body_bytes = self.rfile.read(length)
+            
+        req_headers = {}
+        for k, v in self.headers.items():
+            if k.lower() not in ['host', 'connection', 'accept-encoding']:
+                req_headers[k] = v
+                
+        # Inject Key Signing Headers onto the API requests transparently!
+        body_str = ""
+        if body_bytes:
+            try:
+                body_str = body_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                pass
+                
+        sig_headers = sign_request(self.backend.signing_key, method, self.path, body_str)
+        req_headers.update(sig_headers)
+        
+        try:
+            # Use requests.request (stateless) so cookies flow directly between browser and backend
+            resp = requests.request(
+                method=method,
+                url=url,
+                headers=req_headers,
+                data=body_bytes if body_bytes else None,
+                allow_redirects=False,
+                stream=True,
+                timeout=30
+            )
+            
+            try:
+                self.send_response(resp.status_code)
+                for k, v in resp.headers.items():
+                    if k.lower() not in ['transfer-encoding', 'connection', 'content-encoding']:
+                        self.send_header(k, v)
+                self.end_headers()
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
+            try:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                # Browser closed the connection, normal for HMR or page reloads
+                pass
+                    
+        except Exception as e:
+            if not isinstance(e, (BrokenPipeError, ConnectionResetError)):
+                log.error(f"Proxy error for {self.path}: {e}")
+            try:
+                # If we haven't sent headers yet, try to send a 502
+                self.send_response(502)
+                self.end_headers()
+            except:
+                pass
 
     def log_message(self, format, *args):
-        pass  # suppress request logs
+        pass
 
 # ---------------------------------------------------------------------------
 # USB scanner listener
 # ---------------------------------------------------------------------------
 def usb_scanner_listener(backend, state, device_path):
-    """Read scan events from a USB HID barcode scanner via evdev."""
     try:
         import evdev
     except ImportError:
         log.warning("evdev not installed — USB scanner disabled")
-        log.warning("Install with: pip install evdev")
         return
 
-    # Key code to character mapping (US keyboard layout, numbers only for IDs)
     KEY_MAP = {
         2: "1", 3: "2", 4: "3", 5: "4", 6: "5",
         7: "6", 8: "7", 9: "8", 10: "9", 11: "0",
@@ -281,11 +309,10 @@ def usb_scanner_listener(backend, state, device_path):
     log.info(f"Attempting to open USB device: {device_path}")
     try:
         dev = evdev.InputDevice(device_path)
-        dev.grab()  # exclusive access so keystrokes don't leak
+        dev.grab()
         log.info(f"Listening on: {dev.name}")
     except Exception as e:
         log.error(f"Cannot open USB device {device_path}: {e}")
-        log.error("Check the device path in config.json and permissions.")
         return
 
     buffer = ""
@@ -293,7 +320,7 @@ def usb_scanner_listener(backend, state, device_path):
         if event.type != evdev.ecodes.EV_KEY:
             continue
         key_event = evdev.categorize(event)
-        if key_event.keystate != 1:  # key-down only
+        if key_event.keystate != 1:
             continue
 
         if key_event.scancode == ENTER_KEY:
@@ -305,11 +332,8 @@ def usb_scanner_listener(backend, state, device_path):
         elif key_event.scancode in KEY_MAP:
             buffer += KEY_MAP[key_event.scancode]
 
-
 def stdin_scanner_listener(backend, state):
-    """Fallback: read scanned IDs from stdin (for testing without a USB device)."""
     log.info("USB device not configured — reading scans from stdin")
-    log.info("Type a participant ID and press Enter to simulate a scan.")
     while True:
         try:
             line = input()
@@ -320,9 +344,7 @@ def stdin_scanner_listener(backend, state):
         except EOFError:
             break
 
-
 def handle_scan(backend, state, participant_id):
-    """Process a scanned participant ID."""
     body, status = backend.post_scan(participant_id)
     state.set_scan_result({"body": body, "status": status})
     if status < 400 and "error" not in body:
@@ -347,35 +369,24 @@ def main():
     log.info(f"USB:     {usb_device or '(stdin fallback)'}")
     log.info(f"Port:    {port}")
 
-    # Load signing key
     if not os.path.exists(key_path):
         log.error(f"Private key not found: {key_path}")
-        log.error("Run: python generate_keys.py")
         sys.exit(1)
     signing_key = load_signing_key(key_path)
-    log.info("Signing key loaded")
 
     backend = BackendClient(backend_url, signing_key)
     state = AttendanceState()
 
-    # Start USB scanner (or stdin fallback)
     if usb_device:
-        scanner = threading.Thread(
-            target=usb_scanner_listener,
-            args=(backend, state, usb_device),
-            daemon=True,
-        )
+        scanner = threading.Thread(target=usb_scanner_listener, args=(backend, state, usb_device), daemon=True)
     else:
-        scanner = threading.Thread(
-            target=stdin_scanner_listener, args=(backend, state), daemon=True
-        )
+        scanner = threading.Thread(target=stdin_scanner_listener, args=(backend, state), daemon=True)
     scanner.start()
 
-    # Start HTTP server
     KioskHandler.state = state
-    KioskHandler.backend_url = backend_url
-    server = HTTPServer(("0.0.0.0", port), KioskHandler)
-    log.info(f"Kiosk server running on http://0.0.0.0:{port}")
+    KioskHandler.backend = backend
+    server = ThreadingHTTPServer(("0.0.0.0", port), KioskHandler)
+    log.info(f"Proxy running on http://0.0.0.0:{port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
