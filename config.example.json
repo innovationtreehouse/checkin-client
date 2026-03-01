@@ -1,0 +1,6 @@
+{
+  "backend_url": "example.com",
+  "private_key_path": "./client.key",
+  "usb_device": "/dev/input/event0",
+  "listen_port": 8080
+}
