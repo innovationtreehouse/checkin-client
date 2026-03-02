@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=CheckMeIn Kiosk
+Exec=bash -c "cd ~/checkmein-client && ./kiosk.sh"
+X-GNOME-Autostart-enabled=true

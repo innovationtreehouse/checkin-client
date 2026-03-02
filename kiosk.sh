@@ -3,6 +3,9 @@
 # Run this from the checkmein-client directory.
 set -e
 
+# Ensure we're in the script's directory
+cd "$(dirname "$0")"
+
 # Start the client backend
 echo "Starting kiosk client..."
 python3 client.py &

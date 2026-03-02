@@ -25,6 +25,15 @@ cp config.example.json config.json
 # Edit backend_url, usb_device path, etc.
 ```
 
+## Autostart (Raspberry Pi)
+
+To have the kiosk start automatically at boot:
+
+```bash
+mkdir -p ~/.config/autostart
+cp ~/checkmein-client/checkmein-kiosk.desktop ~/.config/autostart/
+```
+
 ## Running
 
 ```bash
@@ -67,5 +76,6 @@ When `usb_device` is empty in `config.json`, the client reads participant IDs fr
 - `client.py` — Main process (HTTP server + attendance fetcher + USB scanner)
 - `generate_keys.py` — One-time keypair generator
 - `kiosk.sh` — Pi startup script (launches client + Chromium)
+- `checkmein-kiosk.desktop` — Desktop entry for autostart
 - `config.json` — Runtime configuration (not committed)
 - `client.key` — Private key (not committed)
