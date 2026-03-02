@@ -11,8 +11,9 @@ A super-thin Python client for Raspberry Pi that runs at the facility entrance.
 ## Setup
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies (system-wide)
+sudo apt update
+sudo apt install python3-requests python3-nacl python3-evdev
 
 # Generate a keypair (one-time)
 python generate_keys.py

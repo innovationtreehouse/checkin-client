@@ -300,6 +300,20 @@ def usb_scanner_listener(backend, state, device_path):
         log.warning("evdev not installed — USB scanner disabled")
         return
 
+    def find_device(pattern):
+        import evdev
+        devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
+        # 1. Try exact path match
+        for d in devices:
+            if d.path == pattern:
+                return d
+        # 2. Try name match (case-insensitive substring)
+        for d in devices:
+            if pattern.lower() in d.name.lower():
+                log.info(f"Found device '{d.name}' at {d.path} matching pattern '{pattern}'")
+                return d
+        return None
+
     KEY_MAP = {
         2: "1", 3: "2", 4: "3", 5: "4", 6: "5",
         7: "6", 8: "7", 9: "8", 10: "9", 11: "0",
@@ -308,9 +322,18 @@ def usb_scanner_listener(backend, state, device_path):
 
     log.info(f"Attempting to open USB device: {device_path}")
     try:
-        dev = evdev.InputDevice(device_path)
+        dev = find_device(device_path)
+        if not dev:
+            # Fallback: if it's not found by name/path, but looks like a path, try opening it directly
+            if device_path.startswith("/dev/input/"):
+                import evdev
+                dev = evdev.InputDevice(device_path)
+            else:
+                log.error(f"No device found matching: {device_path}")
+                return
+        
         dev.grab()
-        log.info(f"Listening on: {dev.name}")
+        log.info(f"Listening on: {dev.name} ({dev.path})")
     except Exception as e:
         log.error(f"Cannot open USB device {device_path}: {e}")
         return

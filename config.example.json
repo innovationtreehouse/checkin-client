@@ -1,6 +1,6 @@
 {
-  "backend_url": "example.com",
+  "backend_url": "http://localhost:4000",
   "private_key_path": "./client.key",
-  "usb_device": "/dev/input/event0",
-  "listen_port": 8080
+  "usb_device": "Newtologic",
+  "listen_port": 8083
 }
