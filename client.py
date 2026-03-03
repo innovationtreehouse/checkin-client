@@ -160,6 +160,13 @@ class KioskHandler(BaseHTTPRequestHandler):
     border: 2px solid #f87171;
     color: #fff;
   }}
+  .banner-warning {{
+    background: rgba(245,158,11,0.95);
+    border: 2px solid #fbbf24;
+    color: #fff;
+    white-space: pre-wrap;
+    animation: fadeout 12s forwards;
+  }}
   @keyframes fadeout {{
     0% {{ opacity: 1; }}
     80% {{ opacity: 1; }}
@@ -183,7 +190,7 @@ class KioskHandler(BaseHTTPRequestHandler):
             banner.style.animation = null; 
           }}
           lastFlash = text;
-          setTimeout(() => {{ if (lastFlash === text) container.innerHTML = ''; }}, 6000);
+          setTimeout(() => {{ if (lastFlash === text) container.innerHTML = ''; }}, 12000);
         }}
       }}
     }} catch (e) {{}}
@@ -208,15 +215,23 @@ class KioskHandler(BaseHTTPRequestHandler):
         html = ""
         if scan_result:
             sr = scan_result
-            if sr.get("status", 0) >= 400 or "error" in sr.get("body", {}):
-                err = sr.get("body", {}).get("error", "Unknown error")
-                html = f'<div class="banner banner-error">✗ Scan failed: {err}</div>'
+            body = sr.get("body", {})
+            if sr.get("status", 0) >= 400 or "error" in body:
+                if body.get("type") == "warning":
+                    warn = body.get("error", "Warning").replace("\n", "<br>")
+                    html = f'<div class="banner banner-warning">⚠️ {warn}</div>'
+                else:
+                    err = body.get("error", "Unknown error")
+                    html = f'<div class="banner banner-error">✗ Scan failed: {err}</div>'
             else:
-                body = sr.get("body", {})
                 stype = body.get("type", "")
                 email = body.get("participant", {}).get("email", "?")
+                msg = body.get("message", "")
                 label = "CHECKED IN" if stype == "checkin" else "CHECKED OUT"
-                html = f'<div class="banner banner-ok">✓ {email} — {label}</div>'
+                if msg and msg != "Checked in successfully" and msg != "Checked out successfully":
+                    html = f'<div class="banner banner-ok">✓ {email} — {msg}</div>'
+                else:
+                    html = f'<div class="banner banner-ok">✓ {email} — {label}</div>'
         
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
