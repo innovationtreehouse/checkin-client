@@ -1,12 +1,13 @@
 # CheckMeIn Kiosk Client
 
-A super-thin Python client for Raspberry Pi that runs at the facility entrance.
+A thin Python client for Raspberry Pi that runs at the facility entrance. It acts as a transparent signing proxy — Chromium points at this local server, which injects Ed25519 signature headers and forwards all requests to the remote backend.
 
 ## What it does
 
-1. **Displays current attendance** — fetches from the backend API, renders a local HTML page, auto-refreshes every 60 seconds
-2. **Listens for badge scans** — reads USB barcode/QR scanner input, sends signed POST to backend
-3. **Signs all requests** — Ed25519 signatures so the backend can trust the kiosk
+1. **Transparent signing proxy** — serves on `localhost:8083`, proxies all requests to the backend with Ed25519 signature headers injected automatically
+2. **Kiosk display wrapper** — serves an HTML wrapper at `/` that iframes `/kioskdisplay` from the backend, with a flash banner overlay for scan feedback
+3. **Listens for badge scans** — reads USB barcode/QR scanner input, sends signed POST to `/api/scan`
+4. **Scan feedback** — displays check-in/check-out confirmation banners via a polling mechanism
 
 ## Setup
 
@@ -16,29 +17,53 @@ sudo apt update
 sudo apt install python3-requests python3-nacl python3-evdev
 
 # Generate a keypair (one-time)
-python generate_keys.py
+python3 generate_keys.py
 # → writes client.key (keep on Pi)
 # → prints public key hex (paste into backend .env as KIOSK_PUBLIC_KEY)
 
 # Copy and edit config
 cp config.example.json config.json
-# Edit backend_url, usb_device path, etc.
+# Edit backend_url, usb_device, etc.
 ```
 
-## Autostart (Raspberry Pi)
+## Autostart (Raspberry Pi with Openbox)
 
-To have the kiosk start automatically at boot:
+The Pi uses X11 with Openbox. The boot flow is:
 
-```bash
-mkdir -p ~/.config/autostart
-cp ~/checkmein-client/checkmein-kiosk.desktop ~/.config/autostart/
 ```
+Auto-login to tty1 → ~/.profile runs startx → Openbox starts → autostart runs kiosk.sh
+```
+
+### Setup steps
+
+1. **`~/.profile`** must have this line at the end to start X on login:
+   ```bash
+   [[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && startx --
+   ```
+
+2. **`~/.config/openbox/autostart`** should call `kiosk.sh` (copy from system autostart and modify):
+   ```bash
+   mkdir -p ~/.config/openbox
+   cp /etc/xdg/openbox/autostart ~/.config/openbox/autostart
+   ```
+   Then edit `~/.config/openbox/autostart` — replace any `chromium-browser` line at the end with:
+   ```bash
+   # Start kiosk client + Chromium (reads port from config.json)
+   cd ~/checkmein-client && ./kiosk.sh &
+   ```
+
+3. **`/etc/xdg/openbox/autostart`** — comment out any direct `chromium-browser` line (the user autostart overrides it, but both files are sourced):
+   ```bash
+   #chromium-browser  --noerrdialogs --disable-infobars --enable-offline-auto-reload --kiosk http://127.0.0.1:8089
+   ```
+
+> **Note:** Do NOT use `~/.config/autostart/*.desktop` files — Openbox does not process XDG desktop autostart entries.
 
 ## Running
 
 ```bash
 # Development (no USB scanner, reads from stdin)
-python client.py
+python3 client.py
 
 # Production (Raspberry Pi with Chromium kiosk)
 ./kiosk.sh
@@ -54,28 +79,33 @@ When `usb_device` is empty in `config.json`, the client reads participant IDs fr
 |-----|-------------|
 | `backend_url` | Full URL to the CheckMeIn backend (e.g. `https://checkmein.example.com`) |
 | `private_key_path` | Path to the Ed25519 private key file |
-| `usb_device` | Linux input device path (e.g. `/dev/input/event0`), empty for stdin |
-| `listen_port` | Local HTTP server port (default `8080`) |
+| `usb_device` | Device name or path (e.g. `Newtologic` or `/dev/input/event0`), empty for stdin |
+| `listen_port` | Local HTTP server port (default `8083`) |
 
 ## Architecture
 
 ```
-┌──────────────┐       signed GET        ┌──────────────┐
-│  HTTP Server │  ←── /api/attendance ──  │   Backend    │
-│  :8080       │                          │  (Next.js)   │
-│              │       signed POST        │              │
-│  USB Listener│  ──→ /api/scan ────────→ │              │
-└──────────────┘                          └──────────────┘
-     ↑                                         ↑
-  Chromium                               KIOSK_PUBLIC_KEY
-  kiosk mode                              in .env
+┌─────────────────────┐                    ┌──────────────┐
+│  Kiosk Client       │   signed proxy     │   Backend    │
+│  localhost:8083     │  ──────────────→   │  (Next.js)   │
+│                     │                    │              │
+│  GET /              │  serves wrapper    │              │
+│  GET /kioskdisplay  │  ← proxied ──────  │ /kioskdisplay│
+│  GET /poll          │  scan feedback     │              │
+│  POST /api/scan     │  ← from scanner   │ /api/scan    │
+│  * (all other)      │  ← proxied ──────  │              │
+│                     │                    │              │
+│  USB Scanner ───────│──signed POST──────→│              │
+└─────────────────────┘                    └──────────────┘
+        ↑                                        ↑
+     Chromium                              KIOSK_PUBLIC_KEY
+     kiosk mode                             in .env
 ```
 
 ## Files
 
-- `client.py` — Main process (HTTP server + attendance fetcher + USB scanner)
-- `generate_keys.py` — One-time keypair generator
-- `kiosk.sh` — Pi startup script (launches client + Chromium)
-- `checkmein-kiosk.desktop` — Desktop entry for autostart
+- `client.py` — Main process (signing proxy server + scan listener + flash overlay)
+- `generate_keys.py` — One-time Ed25519 keypair generator
+- `kiosk.sh` — Pi startup script (launches client.py, reads port from config, opens Chromium)
 - `config.json` — Runtime configuration (not committed)
-- `client.key` — Private key (not committed)
+- `client.key` — Ed25519 private key (not committed)
