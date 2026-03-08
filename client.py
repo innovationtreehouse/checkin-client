@@ -70,23 +70,23 @@ class BackendClient:
         h["Content-Type"] = "application/json"
         return h
 
-    def post_scan(self, participant_id):
-        path = "/api/scan"
-        body = json.dumps({"participantId": int(participant_id)})
-        headers = self._headers("POST", path, body)
+    def get_attendance(self):
+        path = "/api/attendance"
+        headers = self._headers("GET", path)
         try:
-            r = self.session.post(
-                self.base_url + path, headers=headers, data=body, timeout=10
+            r = self.session.get(
+                self.base_url + path, headers=headers, timeout=10
             )
             return r.json(), r.status_code
         except Exception as e:
-            log.error(f"Failed to post scan: {e}")
+            log.error(f"Failed to get attendance: {e}")
             return {"error": str(e)}, 0
 
 class AttendanceState:
     def __init__(self):
         self.lock = threading.Lock()
         self.subscribers = []  # list of queue.Queue for SSE clients
+        self.current_counts = {"total": 0, "keyholders": 0, "volunteers": 0, "students": 0}
 
     def subscribe(self):
         """Register a new SSE client, returns a Queue to read events from."""
@@ -139,9 +139,21 @@ class KioskHandler(BaseHTTPRequestHandler):
 <title>CheckMeIn — Kiosk</title>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body, html {{ width: 100%; height: 100%; overflow: hidden; background: #0f172a; font-family: sans-serif; }}
+  body, html {{ width: 100%; height: 100%; overflow: hidden; background: #000; font-family: sans-serif; }}
   iframe {{ width: 100%; height: 100%; border: none; }}
   
+  #blackout {{
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #000;
+    z-index: 10000;
+    display: none;
+    pointer-events: none;
+  }}
+
   #flash-container {{
     position: absolute;
     top: 20px;
@@ -186,10 +198,51 @@ class KioskHandler(BaseHTTPRequestHandler):
   }}
 </style>
 <script>
+  let sleepTimeout = null;
+
+  function setBlackout(visible) {{
+    const b = document.getElementById("blackout");
+    if (visible) {{
+      b.style.display = "block";
+    }} else {{
+      b.style.display = "none";
+      if (sleepTimeout) {{
+        clearTimeout(sleepTimeout);
+        sleepTimeout = null;
+      }}
+    }}
+  }}
+
+  function handleData(data, isInitial) {{
+    const counts = data.counts || {{}};
+    const total = counts.total ?? -1;
+
+    // Wake up on any activity
+    if (!isInitial) setBlackout(false);
+
+    if (total === 0) {{
+      // Building is empty — sleep after 5s delay (so user can see banner)
+      if (!sleepTimeout) {{
+        sleepTimeout = setTimeout(() => {{
+          setBlackout(true);
+        }}, isInitial ? 0 : 5000);
+      }}
+    }} else if (total > 0) {{
+      setBlackout(false);
+    }}
+  }}
+
   function connectSSE() {{
     const source = new EventSource("/events");
+
+    source.addEventListener("status", function(e) {{
+      const data = JSON.parse(e.data);
+      handleData(data, true);
+    }});
+
     source.addEventListener("scan", function(e) {{
       const data = JSON.parse(e.data);
+      handleData(data, false);
       const html = data.html || "";
       if (html) {{
         const container = document.getElementById("flash-container");
@@ -217,10 +270,10 @@ class KioskHandler(BaseHTTPRequestHandler):
       setTimeout(connectSSE, 3000);
     }};
   }}
-  connectSSE();
 </script>
 </head>
 <body>
+  <div id="blackout"></div>
   <div id="flash-container"></div>
   <iframe src="/kioskdisplay?mode=kiosk"></iframe>
 </body>
@@ -243,6 +296,12 @@ class KioskHandler(BaseHTTPRequestHandler):
 
         q = self.state.subscribe()
         try:
+            # Send initial status
+            with self.state.lock:
+                initial_status = json.dumps({"counts": self.state.current_counts})
+            self.wfile.write(f"event: status\ndata: {initial_status}\n\n".encode())
+            self.wfile.flush()
+
             while True:
                 try:
                     # Wait up to 30s for an event, then send a keepalive comment
@@ -427,6 +486,11 @@ def handle_scan(backend, state, participant_id):
         else:
             html = f'<div class="banner banner-ok">✓ {email} — {label}</div>'
 
+    # Update current counts in state
+    if "counts" in body:
+        with state.lock:
+            state.current_counts = body["counts"]
+
     # Push to all connected SSE clients instantly, including attendance snapshot
     event_payload = {"html": html}
     # Include attendance data from signed scan response if available
@@ -464,6 +528,15 @@ def main():
 
     backend = BackendClient(backend_url, signing_key)
     state = AttendanceState()
+
+    # Fetch initial attendance state
+    log.info("Fetching initial attendance state...")
+    att_data, att_status = backend.get_attendance()
+    if att_status == 200 and "counts" in att_data:
+        state.current_counts = att_data["counts"]
+        log.info(f"Initial state: {state.current_counts['total']} people present")
+    else:
+        log.warning("Could not fetch initial attendance state")
 
     if usb_device:
         scanner = threading.Thread(target=usb_scanner_listener, args=(backend, state, usb_device), daemon=True)
