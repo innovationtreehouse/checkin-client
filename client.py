@@ -218,7 +218,7 @@ class KioskHandler(BaseHTTPRequestHandler):
 </head>
 <body>
   <div id="flash-container"></div>
-  <iframe src="/kioskdisplay"></iframe>
+  <iframe src="/kioskdisplay?mode=kiosk"></iframe>
 </body>
 </html>"""
         self.send_response(200)
