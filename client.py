@@ -202,10 +202,14 @@ class KioskHandler(BaseHTTPRequestHandler):
         }}
         setTimeout(() => {{ container.innerHTML = ''; }}, 12000);
       }}
-      // Tell iframe to refresh attendance display
+      // Tell iframe to refresh attendance display with inline data
       const iframe = document.querySelector("iframe");
       if (iframe && iframe.contentWindow) {{
-        iframe.contentWindow.postMessage("refresh-attendance", "*");
+        if (data.attendance) {{
+          iframe.contentWindow.postMessage({{type: "refresh-attendance", attendance: data.attendance, counts: data.counts, safety: data.safety}}, "*");
+        }} else {{
+          iframe.contentWindow.postMessage("refresh-attendance", "*");
+        }}
       }}
     }});
     source.onerror = function() {{
@@ -423,8 +427,13 @@ def handle_scan(backend, state, participant_id):
         else:
             html = f'<div class="banner banner-ok">✓ {email} — {label}</div>'
 
-    # Push to all connected SSE clients instantly
-    state.push_event({"html": html})
+    # Push to all connected SSE clients instantly, including attendance snapshot
+    event_payload = {"html": html}
+    # Include attendance data from signed scan response if available
+    for key in ("attendance", "counts", "safety"):
+        if key in body:
+            event_payload[key] = body[key]
+    state.push_event(event_payload)
 
     if status < 400 and "error" not in body:
         ptype = body.get("type", "?")
