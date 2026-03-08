@@ -86,17 +86,29 @@ class BackendClient:
 class AttendanceState:
     def __init__(self):
         self.lock = threading.Lock()
-        self.last_scan = None
+        self.subscribers = []  # list of queue.Queue for SSE clients
 
-    def set_scan_result(self, result):
+    def subscribe(self):
+        """Register a new SSE client, returns a Queue to read events from."""
+        import queue
+        q = queue.Queue()
         with self.lock:
-            self.last_scan = result
+            self.subscribers.append(q)
+        return q
 
-    def pop_scan_result(self):
+    def unsubscribe(self, q):
+        """Remove an SSE client queue."""
         with self.lock:
-            r = self.last_scan
-            self.last_scan = None
-            return r
+            try:
+                self.subscribers.remove(q)
+            except ValueError:
+                pass
+
+    def push_event(self, event_data):
+        """Push an event to all connected SSE clients."""
+        with self.lock:
+            for q in self.subscribers:
+                q.put(event_data)
 
 # ---------------------------------------------------------------------------
 # Transparent Signing Proxy & Kiosk Handler
@@ -108,8 +120,8 @@ class KioskHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             self._serve_wrapper()
-        elif self.path == "/poll":
-            self._serve_poll()
+        elif self.path == "/events":
+            self._serve_sse()
         else:
             self._proxy_request("GET")
 
@@ -174,29 +186,34 @@ class KioskHandler(BaseHTTPRequestHandler):
   }}
 </style>
 <script>
-  let lastFlash = "";
-  async function pollFlashes() {{
-    try {{
-      const res = await fetch("/poll");
-      if (res.ok) {{
-        const text = await res.text();
-        if (text && text !== lastFlash) {{
-          const container = document.getElementById("flash-container");
-          container.innerHTML = text;
-          const banner = container.querySelector(".banner");
-          if (banner) {{
-            banner.style.animation = 'none';
-            banner.offsetHeight;
-            banner.style.animation = null; 
-          }}
-          lastFlash = text;
-          setTimeout(() => {{ if (lastFlash === text) container.innerHTML = ''; }}, 12000);
+  function connectSSE() {{
+    const source = new EventSource("/events");
+    source.addEventListener("scan", function(e) {{
+      const data = JSON.parse(e.data);
+      const html = data.html || "";
+      if (html) {{
+        const container = document.getElementById("flash-container");
+        container.innerHTML = html;
+        const banner = container.querySelector(".banner");
+        if (banner) {{
+          banner.style.animation = 'none';
+          banner.offsetHeight;
+          banner.style.animation = null;
         }}
+        setTimeout(() => {{ container.innerHTML = ''; }}, 12000);
       }}
-    }} catch (e) {{}}
-    setTimeout(pollFlashes, 1000);
+      // Tell iframe to refresh attendance display
+      const iframe = document.querySelector("iframe");
+      if (iframe && iframe.contentWindow) {{
+        iframe.contentWindow.postMessage("refresh-attendance", "*");
+      }}
+    }});
+    source.onerror = function() {{
+      source.close();
+      setTimeout(connectSSE, 3000);
+    }};
   }}
-  setTimeout(pollFlashes, 1000);
+  connectSSE();
 </script>
 </head>
 <body>
@@ -210,34 +227,36 @@ class KioskHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(html.encode("utf-8"))
 
-    def _serve_poll(self):
-        scan_result = self.state.pop_scan_result()
-        html = ""
-        if scan_result:
-            sr = scan_result
-            body = sr.get("body", {})
-            if sr.get("status", 0) >= 400 or "error" in body:
-                if body.get("type") == "warning":
-                    warn = body.get("error", "Warning").replace("\n", "<br>")
-                    html = f'<div class="banner banner-warning">⚠️ {warn}</div>'
-                else:
-                    err = body.get("error", "Unknown error")
-                    html = f'<div class="banner banner-error">✗ Scan failed: {err}</div>'
-            else:
-                stype = body.get("type", "")
-                email = body.get("participant", {}).get("email", "?")
-                msg = body.get("message", "")
-                label = "CHECKED IN" if stype == "checkin" else "CHECKED OUT"
-                if msg and msg != "Checked in successfully" and msg != "Checked out successfully":
-                    html = f'<div class="banner banner-ok">✓ {email} — {msg}</div>'
-                else:
-                    html = f'<div class="banner banner-ok">✓ {email} — {label}</div>'
-        
+    def _serve_sse(self):
+        """Server-Sent Events stream for pushing badge scan results to the browser."""
+        import queue as queue_mod
         self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
         self.end_headers()
-        self.wfile.write(html.encode("utf-8"))
+
+        q = self.state.subscribe()
+        try:
+            while True:
+                try:
+                    # Wait up to 30s for an event, then send a keepalive comment
+                    event_data = q.get(timeout=30)
+                    payload = json.dumps(event_data)
+                    self.wfile.write(f"event: scan\ndata: {payload}\n\n".encode())
+                    self.wfile.flush()
+                except queue_mod.Empty:
+                    # Timeout — send keepalive to detect dead connections
+                    try:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        break
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            self.state.unsubscribe(q)
 
     def _proxy_request(self, method):
         url = self.backend.base_url + self.path
@@ -384,7 +403,29 @@ def stdin_scanner_listener(backend, state):
 
 def handle_scan(backend, state, participant_id):
     body, status = backend.post_scan(participant_id)
-    state.set_scan_result({"body": body, "status": status})
+
+    # Build banner HTML for the wrapper page
+    html = ""
+    if status >= 400 or "error" in body:
+        if body.get("type") == "warning":
+            warn = body.get("error", "Warning").replace("\n", "<br>")
+            html = f'<div class="banner banner-warning">⚠️ {warn}</div>'
+        else:
+            err = body.get("error", "Unknown error")
+            html = f'<div class="banner banner-error">✗ Scan failed: {err}</div>'
+    else:
+        stype = body.get("type", "")
+        email = body.get("participant", {}).get("email", "?")
+        msg = body.get("message", "")
+        label = "CHECKED IN" if stype == "checkin" else "CHECKED OUT"
+        if msg and msg != "Checked in successfully" and msg != "Checked out successfully":
+            html = f'<div class="banner banner-ok">✓ {email} — {msg}</div>'
+        else:
+            html = f'<div class="banner banner-ok">✓ {email} — {label}</div>'
+
+    # Push to all connected SSE clients instantly
+    state.push_event({"html": html})
+
     if status < 400 and "error" not in body:
         ptype = body.get("type", "?")
         email = body.get("participant", {}).get("email", "?")
