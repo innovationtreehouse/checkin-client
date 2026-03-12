@@ -82,6 +82,12 @@ When `usb_device` is empty in `config.json`, the client reads participant IDs fr
 | `usb_device` | Device name or path (e.g. `Newtologic` or `/dev/input/event0`), empty for stdin |
 | `listen_port` | Local HTTP server port (default `8083`) |
 
+You can also use a `.env` file in the `checkmein-client` directory for additional configuration:
+
+| Env Var | Description |
+|---------|-------------|
+| `KIOSK_PATH` | The relative path / application page the kiosk iframe should render (default `/kioskdisplay?mode=kiosk`). |
+
 ## Architecture
 
 ```

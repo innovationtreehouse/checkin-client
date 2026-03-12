@@ -32,6 +32,18 @@ log = logging.getLogger("kiosk")
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+def load_dotenv(path=".env"):
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if '=' in line:
+                k, v = line.split('=', 1)
+                os.environ[k.strip()] = v.strip().strip('"\'')
+
 def load_config(path="config.json"):
     if not os.path.exists(path):
         log.error(f"Config file not found: {path}")
@@ -275,7 +287,7 @@ class KioskHandler(BaseHTTPRequestHandler):
 <body>
   <div id="blackout"></div>
   <div id="flash-container"></div>
-  <iframe src="/kioskdisplay?mode=kiosk"></iframe>
+  <iframe src="{os.environ.get('KIOSK_PATH', '/kioskdisplay?mode=kiosk')}"></iframe>
 </body>
 </html>"""
         self.send_response(200)
@@ -510,6 +522,8 @@ def handle_scan(backend, state, participant_id):
 # Main
 # ---------------------------------------------------------------------------
 def main():
+    load_dotenv()
+    
     config = load_config()
     backend_url = config["backend_url"]
     key_path = config.get("private_key_path", "./client.key")
@@ -520,6 +534,7 @@ def main():
     log.info(f"Key:     {key_path}")
     log.info(f"USB:     {usb_device or '(stdin fallback)'}")
     log.info(f"Port:    {port}")
+    log.info(f"Path:    {os.environ.get('KIOSK_PATH', '/kioskdisplay?mode=kiosk')}")
 
     if not os.path.exists(key_path):
         log.error(f"Private key not found: {key_path}")
