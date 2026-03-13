@@ -26,19 +26,21 @@ cp config.example.json config.json
 # Edit backend_url, usb_device, etc.
 ```
 
-## Autostart (Raspberry Pi with Openbox)
+## Autostart (Raspberry Pi with LightDM + Openbox)
 
-The Pi uses X11 with Openbox. The boot flow is:
+The Pi uses LightDM (graphical display manager) with an Openbox session. The boot flow is:
 
 ```
-Auto-login to tty1 → ~/.profile runs startx → Openbox starts → autostart runs kiosk.sh
+LightDM auto-login → Openbox X session → autostart runs kiosk.sh
 ```
 
 ### Setup steps
 
-1. **`~/.profile`** must have this line at the end to start X on login:
-   ```bash
-   [[ -z $DISPLAY && $XDG_VTNR -eq 1 ]] && startx --
+1. **Configure LightDM auto-login** — edit `/etc/lightdm/lightdm.conf` and ensure these lines are in the `[Seat:*]` section (replace `pi` with the kiosk user if different). Remove or comment out any other `autologin-session` lines:
+   ```ini
+   [Seat:*]
+   autologin-user=pi
+   autologin-session=openbox
    ```
 
 2. **`~/.config/openbox/autostart`** should call `kiosk.sh` (copy from system autostart and modify):
@@ -46,13 +48,13 @@ Auto-login to tty1 → ~/.profile runs startx → Openbox starts → autostart r
    mkdir -p ~/.config/openbox
    cp /etc/xdg/openbox/autostart ~/.config/openbox/autostart
    ```
-   Then edit `~/.config/openbox/autostart` — replace any `chromium-browser` line at the end with:
+   Then edit `~/.config/openbox/autostart` — replace any `chromium-browser`/`chromium` line at the end with:
    ```bash
    # Start kiosk client + Chromium (reads port from config.json)
    cd ~/checkmein-client && ./kiosk.sh &
    ```
 
-3. **`/etc/xdg/openbox/autostart`** — comment out any direct `chromium-browser` line (the user autostart overrides it, but both files are sourced):
+3. **`/etc/xdg/openbox/autostart`** — comment out any direct `chromium` line (the user autostart overrides it, but both files are sourced):
    ```bash
    #chromium-browser  --noerrdialogs --disable-infobars --enable-offline-auto-reload --kiosk http://127.0.0.1:8089
    ```

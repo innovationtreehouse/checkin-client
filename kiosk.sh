@@ -17,7 +17,18 @@ sleep 2
 # Open Chromium in kiosk mode
 PORT=$(python3 -c "import json; print(json.load(open('config.json')).get('listen_port', 8080))")
 echo "Opening kiosk browser on port $PORT"
-chromium-browser \
+
+# Newer Pi OS uses 'chromium', older uses 'chromium-browser'
+if command -v chromium-browser &>/dev/null; then
+  CHROME=chromium-browser
+elif command -v chromium &>/dev/null; then
+  CHROME=chromium
+else
+  echo "ERROR: No Chromium browser found" >&2
+  exit 1
+fi
+
+$CHROME \
   --kiosk \
   --noerrdialogs \
   --disable-infobars \
