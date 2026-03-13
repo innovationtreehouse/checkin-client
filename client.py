@@ -60,10 +60,10 @@ def sign_request(signing_key, method, path, body=""):
 # Backend communication & State
 # ---------------------------------------------------------------------------
 class BackendClient:
-    def __init__(self, base_url, signing_key, kiosk_path="/api/attendance"):
+    def __init__(self, base_url, signing_key, attendance_path=None):
         self.base_url = base_url.rstrip("/")
         self.signing_key = signing_key
-        self.kiosk_path = kiosk_path
+        self.attendance_path = attendance_path
         self.session = requests.Session()
 
     def _headers(self, method, path, body=""):
@@ -72,7 +72,9 @@ class BackendClient:
         return h
 
     def get_attendance(self):
-        path = self.kiosk_path
+        if not self.attendance_path:
+            return {"error": "no attendance_path configured"}, 0
+        path = self.attendance_path
         headers = self._headers("GET", path)
         try:
             r = self.session.get(
@@ -337,6 +339,10 @@ class KioskHandler(BaseHTTPRequestHandler):
                 req_headers[k] = v
                 
         # Inject Key Signing Headers onto the API requests transparently!
+        # Sign with pathname only (no query string) — backend verifies against pathname
+        from urllib.parse import urlparse
+        sign_path = urlparse(self.path).path
+
         body_str = ""
         if body_bytes:
             try:
@@ -344,7 +350,7 @@ class KioskHandler(BaseHTTPRequestHandler):
             except UnicodeDecodeError:
                 pass
                 
-        sig_headers = sign_request(self.backend.signing_key, method, self.path, body_str)
+        sig_headers = sign_request(self.backend.signing_key, method, sign_path, body_str)
         req_headers.update(sig_headers)
         
         try:
@@ -511,6 +517,22 @@ def handle_scan(backend, state, participant_id):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+def attendance_poller(backend, state, interval=30):
+    """Background thread that polls attendance counts periodically.
+    Pushes SSE status events when counts change so the blackout
+    logic works on display-only kiosks without a scanner."""
+    while True:
+        time.sleep(interval)
+        att_data, att_status = backend.get_attendance()
+        if att_status == 200 and "counts" in att_data:
+            new_counts = att_data["counts"]
+            with state.lock:
+                changed = new_counts != state.current_counts
+                state.current_counts = new_counts
+            if changed:
+                log.info(f"Attendance poll: {new_counts.get('total', '?')} present")
+                state.push_event({"html": "", "counts": new_counts})
+
 def main():
     config = load_config()
     backend_url = config["backend_url"]
@@ -518,29 +540,36 @@ def main():
     usb_device = config.get("usb_device", "")
     port = int(config.get("listen_port", 8080))
     kiosk_path = config.get("kiosk_path", "/kioskdisplay?mode=kiosk")
+    attendance_path = config.get("attendance_path", "")
 
     log.info(f"Backend: {backend_url}")
     log.info(f"Key:     {key_path}")
     log.info(f"USB:     {usb_device or '(stdin fallback)'}")
     log.info(f"Port:    {port}")
     log.info(f"Path:    {kiosk_path}")
+    log.info(f"Attendance: {attendance_path or '(disabled)'}")
 
     if not os.path.exists(key_path):
         log.error(f"Private key not found: {key_path}")
         sys.exit(1)
     signing_key = load_signing_key(key_path)
 
-    backend = BackendClient(backend_url, signing_key, kiosk_path)
+    backend = BackendClient(backend_url, signing_key, attendance_path or None)
     state = AttendanceState()
 
-    # Fetch initial attendance state
-    log.info("Fetching initial attendance state...")
-    att_data, att_status = backend.get_attendance()
-    if att_status == 200 and "counts" in att_data:
-        state.current_counts = att_data["counts"]
-        log.info(f"Initial state: {state.current_counts['total']} people present")
-    else:
-        log.warning("Could not fetch initial attendance state")
+    # Fetch initial attendance state (only if attendance_path is configured)
+    if attendance_path:
+        log.info("Fetching initial attendance state...")
+        att_data, att_status = backend.get_attendance()
+        if att_status == 200 and "counts" in att_data:
+            state.current_counts = att_data["counts"]
+            log.info(f"Initial state: {state.current_counts['total']} people present")
+        else:
+            log.warning("Could not fetch initial attendance state")
+
+        # Start background poller for blackout updates
+        poller = threading.Thread(target=attendance_poller, args=(backend, state), daemon=True)
+        poller.start()
 
     if usb_device:
         scanner = threading.Thread(target=usb_scanner_listener, args=(backend, state, usb_device), daemon=True)
