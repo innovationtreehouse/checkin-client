@@ -516,7 +516,7 @@ def main():
     backend_url = config["backend_url"]
     key_path = config.get("private_key_path", "./client.key")
     usb_device = config.get("usb_device", "")
-    port = config.get("listen_port", 8080)
+    port = int(config.get("listen_port", 8080))
     kiosk_path = config.get("kiosk_path", "/kioskdisplay?mode=kiosk")
 
     log.info(f"Backend: {backend_url}")
