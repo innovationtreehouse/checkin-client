@@ -83,8 +83,7 @@ When `usb_device` is empty in `config.json`, the client reads participant IDs fr
 | `private_key_path` | Path to the Ed25519 private key file |
 | `usb_device` | Device name or path (e.g. `Newtologic` or `/dev/input/event0`), empty for stdin |
 | `listen_port` | Local HTTP server port (default `8083`) |
-| `kiosk_path` | The page the kiosk iframe displays (default `/kioskdisplay?mode=kiosk`) |
-| `attendance_path` | API path for initial attendance fetch (default `/api/attendance`) |
+| `kiosk_path` | Backend path for the kiosk display and initial data fetch (default `/kioskdisplay?mode=kiosk`) |
 
 ## Architecture
 

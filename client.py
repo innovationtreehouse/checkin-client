@@ -60,10 +60,10 @@ def sign_request(signing_key, method, path, body=""):
 # Backend communication & State
 # ---------------------------------------------------------------------------
 class BackendClient:
-    def __init__(self, base_url, signing_key, attendance_path="/api/attendance"):
+    def __init__(self, base_url, signing_key, kiosk_path="/api/attendance"):
         self.base_url = base_url.rstrip("/")
         self.signing_key = signing_key
-        self.attendance_path = attendance_path
+        self.kiosk_path = kiosk_path
         self.session = requests.Session()
 
     def _headers(self, method, path, body=""):
@@ -72,7 +72,7 @@ class BackendClient:
         return h
 
     def get_attendance(self):
-        path = self.attendance_path
+        path = self.kiosk_path
         headers = self._headers("GET", path)
         try:
             r = self.session.get(
@@ -518,7 +518,6 @@ def main():
     usb_device = config.get("usb_device", "")
     port = config.get("listen_port", 8080)
     kiosk_path = config.get("kiosk_path", "/kioskdisplay?mode=kiosk")
-    attendance_path = config.get("attendance_path", "/api/attendance")
 
     log.info(f"Backend: {backend_url}")
     log.info(f"Key:     {key_path}")
@@ -531,7 +530,7 @@ def main():
         sys.exit(1)
     signing_key = load_signing_key(key_path)
 
-    backend = BackendClient(backend_url, signing_key, attendance_path)
+    backend = BackendClient(backend_url, signing_key, kiosk_path)
     state = AttendanceState()
 
     # Fetch initial attendance state
