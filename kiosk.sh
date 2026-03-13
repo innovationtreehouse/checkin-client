@@ -34,6 +34,7 @@ $CHROME \
   --disable-infobars \
   --no-first-run \
   --disable-session-crashed-bubble \
+  --password-store=basic \
   "http://localhost:${PORT}" &
 
 # If the browser dies, kill the client too
