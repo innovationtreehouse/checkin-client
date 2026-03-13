@@ -32,18 +32,6 @@ log = logging.getLogger("kiosk")
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-def load_dotenv(path=".env"):
-    if not os.path.exists(path):
-        return
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            if '=' in line:
-                k, v = line.split('=', 1)
-                os.environ[k.strip()] = v.strip().strip('"\'')
-
 def load_config(path="config.json"):
     if not os.path.exists(path):
         log.error(f"Config file not found: {path}")
@@ -128,6 +116,7 @@ class AttendanceState:
 class KioskHandler(BaseHTTPRequestHandler):
     state = None
     backend = None
+    kiosk_path = "/kioskdisplay?mode=kiosk"
 
     def do_GET(self):
         if self.path == "/":
@@ -287,7 +276,7 @@ class KioskHandler(BaseHTTPRequestHandler):
 <body>
   <div id="blackout"></div>
   <div id="flash-container"></div>
-  <iframe src="{os.environ.get('KIOSK_PATH', '/kioskdisplay?mode=kiosk')}"></iframe>
+  <iframe src="{self.kiosk_path}"></iframe>
 </body>
 </html>"""
         self.send_response(200)
@@ -522,19 +511,18 @@ def handle_scan(backend, state, participant_id):
 # Main
 # ---------------------------------------------------------------------------
 def main():
-    load_dotenv()
-    
     config = load_config()
     backend_url = config["backend_url"]
     key_path = config.get("private_key_path", "./client.key")
     usb_device = config.get("usb_device", "")
     port = config.get("listen_port", 8080)
+    kiosk_path = config.get("kiosk_path", "/kioskdisplay?mode=kiosk")
 
     log.info(f"Backend: {backend_url}")
     log.info(f"Key:     {key_path}")
     log.info(f"USB:     {usb_device or '(stdin fallback)'}")
     log.info(f"Port:    {port}")
-    log.info(f"Path:    {os.environ.get('KIOSK_PATH', '/kioskdisplay?mode=kiosk')}")
+    log.info(f"Path:    {kiosk_path}")
 
     if not os.path.exists(key_path):
         log.error(f"Private key not found: {key_path}")
@@ -561,6 +549,7 @@ def main():
 
     KioskHandler.state = state
     KioskHandler.backend = backend
+    KioskHandler.kiosk_path = kiosk_path
     server = ThreadingHTTPServer(("0.0.0.0", port), KioskHandler)
     log.info(f"Proxy running on http://0.0.0.0:{port}")
     try:
