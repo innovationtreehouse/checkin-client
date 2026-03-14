@@ -6,6 +6,9 @@ set -e
 # Ensure we're in the script's directory
 cd "$(dirname "$0")"
 
+echo "Pulling latest changes from git..."
+git pull origin master
+
 # Start the client backend
 echo "Starting kiosk client..."
 python3 client.py &
