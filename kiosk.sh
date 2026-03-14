@@ -18,6 +18,11 @@ sleep 2
 PORT=$(python3 -c "import json; print(json.load(open('config.json')).get('listen_port', 8080))")
 echo "Opening kiosk browser on port $PORT"
 
+# Disable X11 screen blanking and power management (DPMS) so the screen stays on
+xset s noblank || true
+xset s off || true
+xset -dpms || true
+
 # Newer Pi OS uses 'chromium', older uses 'chromium-browser'
 if command -v chromium-browser &>/dev/null; then
   CHROME=chromium-browser
