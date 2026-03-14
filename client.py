@@ -120,6 +120,7 @@ class KioskHandler(BaseHTTPRequestHandler):
     state = None
     backend = None
     kiosk_path = "/kioskdisplay?mode=kiosk"
+    disable_blackout = False
 
     def do_GET(self):
         if self.path == "/":
@@ -203,8 +204,10 @@ class KioskHandler(BaseHTTPRequestHandler):
 </style>
 <script>
   let sleepTimeout = null;
+  const disableBlackout = {str(self.disable_blackout).lower()};
 
   function setBlackout(visible) {{
+    if (disableBlackout) return;
     const b = document.getElementById("blackout");
     if (visible) {{
       b.style.display = "block";
@@ -541,6 +544,7 @@ def main():
     port = int(config.get("listen_port", 8080))
     kiosk_path = config.get("kiosk_path", "/kioskdisplay?mode=kiosk")
     attendance_path = config.get("attendance_path", "")
+    disable_blackout = config.get("disable_blackout", True)
 
     log.info(f"Backend: {backend_url}")
     log.info(f"Key:     {key_path}")
@@ -580,6 +584,7 @@ def main():
     KioskHandler.state = state
     KioskHandler.backend = backend
     KioskHandler.kiosk_path = kiosk_path
+    KioskHandler.disable_blackout = disable_blackout
     server = ThreadingHTTPServer(("0.0.0.0", port), KioskHandler)
     log.info(f"Proxy running on http://0.0.0.0:{port}")
     try:
