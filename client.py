@@ -71,6 +71,23 @@ class BackendClient:
         h["Content-Type"] = "application/json"
         return h
 
+    def post_scan(self, participant_id):
+        path = "/api/scan"
+        try:
+            body = json.dumps({"participantId": int(participant_id)})
+        except ValueError:
+            body = json.dumps({"participantId": participant_id})
+            
+        headers = self._headers("POST", path, body)
+        try:
+            r = self.session.post(
+                self.base_url + path, headers=headers, data=body, timeout=10
+            )
+            return r.json(), r.status_code
+        except Exception as e:
+            log.error(f"Failed to post scan: {e}")
+            return {"error": str(e)}, 0
+
     def get_attendance(self):
         if not self.attendance_path:
             return {"error": "no attendance_path configured"}, 0
