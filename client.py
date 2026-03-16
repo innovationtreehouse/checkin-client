@@ -296,7 +296,7 @@ class KioskHandler(BaseHTTPRequestHandler):
   }}
 </script>
 </head>
-<body>
+<body onload="connectSSE()">
   <div id="blackout"></div>
   <div id="flash-container"></div>
   <iframe src="{self.kiosk_path}"></iframe>
