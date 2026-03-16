@@ -514,18 +514,8 @@ def handle_scan(backend, state, participant_id):
         else:
             html = f'<div class="banner banner-ok">✓ {email} — {label}</div>'
 
-    # Update current counts in state
-    if "counts" in body:
-        with state.lock:
-            state.current_counts = body["counts"]
-
-    # Push to all connected SSE clients instantly, including attendance snapshot
-    event_payload = {"html": html}
-    # Include attendance data from signed scan response if available
-    for key in ("attendance", "counts", "safety"):
-        if key in body:
-            event_payload[key] = body[key]
-    state.push_event(event_payload)
+    # Phase 1: Push banner immediately (no attendance data yet)
+    state.push_event({"html": html})
 
     if status < 400 and "error" not in body:
         ptype = body.get("type", "?")
@@ -533,6 +523,19 @@ def handle_scan(backend, state, participant_id):
         log.info(f"Scan result: {ptype.upper()} — {email}")
     else:
         log.warning(f"Scan error: {body.get('error', body)}")
+
+    # Phase 2: Fetch fresh attendance and push update for the iframe
+    if backend.attendance_path and status < 400:
+        att_data, att_status = backend.get_attendance()
+        if att_status == 200:
+            event_payload = {"html": ""}
+            for key in ("attendance", "counts", "safety"):
+                if key in att_data:
+                    event_payload[key] = att_data[key]
+            if "counts" in att_data:
+                with state.lock:
+                    state.current_counts = att_data["counts"]
+            state.push_event(event_payload)
 
 # ---------------------------------------------------------------------------
 # Main
