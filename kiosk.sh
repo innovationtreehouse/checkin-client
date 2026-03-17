@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # CheckMeIn Kiosk — start script for Raspberry Pi
-# Run this from the checkmein-client directory.
+# Run this from the checkin-client directory.
 set -e
 
 # Ensure we're in the script's directory

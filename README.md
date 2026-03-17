@@ -51,7 +51,7 @@ LightDM auto-login → Openbox X session → autostart runs kiosk.sh
    Then edit `~/.config/openbox/autostart` — replace any `chromium-browser`/`chromium` line at the end with:
    ```bash
    # Start kiosk client + Chromium (reads port from config.json)
-   cd ~/checkmein-client && ./kiosk.sh &
+   cd ~/checkin-client && ./kiosk.sh &
    ```
 
 3. **`/etc/xdg/openbox/autostart`** — comment out any direct `chromium` line (the user autostart overrides it, but both files are sourced):
