@@ -102,6 +102,19 @@ class BackendClient:
             log.error(f"Failed to get attendance: {e}")
             return {"error": str(e)}, 0
 
+    def get_server_version(self):
+        path = "/api/kiosk/version"
+        headers = self._headers("GET", path)
+        try:
+            r = self.session.get(
+                self.base_url + path, headers=headers, timeout=5
+            )
+            data = r.json()
+            return data.get("version"), r.status_code
+        except Exception as e:
+            log.error(f"Failed to get server version: {e}")
+            return None, 0
+
 class AttendanceState:
     def __init__(self):
         self.lock = threading.Lock()
@@ -266,6 +279,15 @@ class KioskHandler(BaseHTTPRequestHandler):
 
     source.addEventListener("scan", function(e) {{
       const data = JSON.parse(e.data);
+      if (data.reload) {{
+        const iframe = document.querySelector("iframe");
+        if (iframe) {{
+          const u = new URL(iframe.src, window.location.origin);
+          u.searchParams.set('_t', Date.now());
+          iframe.src = u.toString();
+        }}
+        return;
+      }}
       handleData(data, false);
       const html = data.html || "";
       if (html) {{
@@ -556,6 +578,44 @@ def attendance_poller(backend, state, interval=30):
                 log.info(f"Attendance poll: {new_counts.get('total', '?')} present")
                 state.push_event({"html": "", "counts": new_counts})
 
+def version_poller(backend, state, interval=60):
+    """Background thread that checks for client and server version updates."""
+    import subprocess
+    
+    # Get initial server version
+    initial_server_version = None
+    for _ in range(6):
+        sv, status = backend.get_server_version()
+        if status == 200 and sv:
+            initial_server_version = sv
+            log.info(f"Initial server version: {initial_server_version}")
+            break
+        time.sleep(5)
+    
+    while True:
+        time.sleep(interval)
+        
+        # 1. Check Server Version Update
+        if initial_server_version:
+            sv, status = backend.get_server_version()
+            if status == 200 and sv and sv != initial_server_version:
+                log.info(f"Server version changed from {initial_server_version} to {sv}. Requesting reload.")
+                state.push_event({"reload": True})
+                initial_server_version = sv  # Update to prevent spam
+        
+        # 2. Check Client Version Update
+        try:
+            subprocess.run(["git", "fetch", "origin", "master"], capture_output=True, timeout=15)
+            
+            local_head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+            remote_head = subprocess.check_output(["git", "rev-parse", "origin/master"], text=True).strip()
+            
+            if local_head and remote_head and local_head != remote_head:
+                log.info(f"Client version update available ({local_head} -> {remote_head}). Restarting client.")
+                os._exit(0)
+        except Exception as e:
+            log.error(f"Error checking client version: {e}")
+
 def main():
     config = load_config()
     backend_url = config["backend_url"]
@@ -594,6 +654,10 @@ def main():
         # Start background poller for blackout updates
         poller = threading.Thread(target=attendance_poller, args=(backend, state), daemon=True)
         poller.start()
+
+    # Start version poller thread
+    vpoller = threading.Thread(target=version_poller, args=(backend, state), daemon=True)
+    vpoller.start()
 
     if usb_device:
         scanner = threading.Thread(target=usb_scanner_listener, args=(backend, state, usb_device), daemon=True)
