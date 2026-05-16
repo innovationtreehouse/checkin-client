@@ -37,22 +37,7 @@ if ! git ls-remote "$MONOREPO_URL" >/dev/null 2>&1; then
   fail "Cannot reach $MONOREPO_URL. Authorize this Pi's SSH key for the checkin repo first."
 fi
 
-# --- 1. Stop the kiosk loop ---
-log "Stopping any running kiosk processes..."
-pkill -f kiosk.sh  || true
-pkill -f client.py || true
-sleep 1
-
-# --- 2. Back up secrets out-of-tree (defense in depth) ---
-SECRETS_BACKUP="$HOME/.kiosk-migrate-backup"
-mkdir -p "$SECRETS_BACKUP"
-chmod 700 "$SECRETS_BACKUP"
-log "Copying secrets to $SECRETS_BACKUP (will remain after script exits)"
-cp "$OLD_DIR/config.json" "$SECRETS_BACKUP/config.json"
-cp "$OLD_DIR/client.key"  "$SECRETS_BACKUP/client.key"
-chmod 600 "$SECRETS_BACKUP/client.key"
-
-# --- 3. Clone (or refresh) the monorepo ---
+# --- 1. Clone (or refresh) the monorepo (non-destructive: kiosk keeps running) ---
 if [ ! -d "$NEW_DIR" ]; then
   log "Cloning monorepo into $NEW_DIR"
   git clone "$MONOREPO_URL" "$NEW_DIR"
@@ -63,7 +48,23 @@ else
   git -C "$NEW_DIR" pull --ff-only origin main
 fi
 
-[ -d "$NEW_CLIENT_DIR" ] || fail "$NEW_CLIENT_DIR not found in monorepo. Was the subtree merge run?"
+# Bail BEFORE touching the kiosk if the monorepo isn't ready yet.
+[ -d "$NEW_CLIENT_DIR" ] || fail "$NEW_CLIENT_DIR not found in monorepo. Was the subtree merge run? Aborting before touching the kiosk."
+
+# --- 2. Stop the kiosk loop ---
+log "Stopping any running kiosk processes..."
+pkill -f kiosk.sh  || true
+pkill -f client.py || true
+sleep 1
+
+# --- 3. Back up secrets out-of-tree (defense in depth) ---
+SECRETS_BACKUP="$HOME/.kiosk-migrate-backup"
+mkdir -p "$SECRETS_BACKUP"
+chmod 700 "$SECRETS_BACKUP"
+log "Copying secrets to $SECRETS_BACKUP (will remain after script exits)"
+cp "$OLD_DIR/config.json" "$SECRETS_BACKUP/config.json"
+cp "$OLD_DIR/client.key"  "$SECRETS_BACKUP/client.key"
+chmod 600 "$SECRETS_BACKUP/client.key"
 
 # --- 4. Restore secrets into the new location ---
 log "Installing secrets into $NEW_CLIENT_DIR"
